@@ -27,7 +27,7 @@ func main() {
 		log.Fatalln("failed to unmarshal secrets")
 	}
 
-	s3 := s3Client.S3Client{}
+	s3 := s3Client.NewS3Client()
 
 	client := twitchIrc.NewClient(s.Username, s.OauthKey)
 	client.Join(channels...)
@@ -37,7 +37,7 @@ func main() {
 	})
 
 	client.OnPrivateMessage(func(m twitchIrc.PrivateMessage) {
-		err := s3.Put(m.Message, m.User.Name, m.Channel, m.Time)
+		err := s3.Put(m)
 		if err != nil {
 			log.Println(err)
 		}
