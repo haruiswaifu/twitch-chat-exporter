@@ -1,0 +1,6 @@
+{
+  "bucket-name": "twitch-channel-logs",
+  "athena-db-name": "twitch_chat_logs_test",
+  "athena-table-name": "logs",
+  "query-execution-bucket-name": "twitch-channel-logs-athena-results"
+}

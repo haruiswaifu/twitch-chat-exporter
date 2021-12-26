@@ -1,4 +1,4 @@
-package s3_client
+package aws_client
 
 import (
 	"bytes"
@@ -13,21 +13,24 @@ import (
 	"time"
 )
 
-const bucketName = "twitch-channel-logs"
-const athenaDbName = "twitch_chat_logs_test"
-const athenaTableName = "logs"
-const queryExecutionBucketName = "twitch-channel-logs-athena-results"
+type AwsConfig struct {
+	BucketName               string `json:"bucket-name"`
+	AthenaDbName             string `json:"athena-db-name"`
+	AthenaTableName          string `json:"athena-table-name"`
+	QueryExecutionBucketName string `json:"query-execution-bucket-name"`
+}
 
-type S3ClientInterface interface {
+type ChatLogPutter interface {
 	Put(message string, channel string, time time.Time) error
 }
 
-type S3Client struct {
+type AWSClient struct {
 	s3uploader   *s3manager.Uploader
 	athenaClient *athena.Athena
+	awsConfig    AwsConfig
 }
 
-func NewS3Client() *S3Client {
+func NewAWSClient(awsConfig AwsConfig) *AWSClient {
 	// Initialize a session that the SDK will use to load
 	// credentials from the shared credentials file ~/.aws/credentials
 	// and region from the shared configuration file ~/.aws/config.
@@ -37,9 +40,10 @@ func NewS3Client() *S3Client {
 	}))
 	uploader := s3manager.NewUploader(sess)
 	athenaClient := athena.New(sess)
-	return &S3Client{
+	return &AWSClient{
 		s3uploader:   uploader,
 		athenaClient: athenaClient,
+		awsConfig:    awsConfig,
 	}
 }
 
@@ -50,7 +54,7 @@ type messageToSave struct {
 	Channel  string `json:"channel"`
 }
 
-func (s3 *S3Client) Put(message twitchIrc.PrivateMessage) error {
+func (awsClient *AWSClient) Put(message twitchIrc.PrivateMessage) error {
 	t, channel := message.Time, message.Channel
 
 	y, m, d := t.Year(), int(t.Month()), t.Day()
@@ -70,8 +74,8 @@ func (s3 *S3Client) Put(message twitchIrc.PrivateMessage) error {
 		return errors.New(errMessage)
 	}
 
-	_, err = s3.s3uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(bucketName),
+	_, err = awsClient.s3uploader.Upload(&s3manager.UploadInput{
+		Bucket: aws.String(awsClient.awsConfig.BucketName),
 		Key:    aws.String(prefixKey),
 		Body:   bytes.NewReader(marshalledMessage),
 	})
@@ -82,21 +86,26 @@ func (s3 *S3Client) Put(message twitchIrc.PrivateMessage) error {
 	}
 
 	var s athena.StartQueryExecutionInput
-	var queryString = fmt.Sprintf("ALTER TABLE %s.%s ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');", athenaDbName, athenaTableName, channel, dateString)
+	var queryString = fmt.Sprintf(
+		"ALTER TABLE %s.%s ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');",
+		awsClient.awsConfig.AthenaDbName,
+		awsClient.awsConfig.AthenaTableName,
+		channel,
+		dateString)
 	s.SetQueryString(queryString)
 
 	var q athena.QueryExecutionContext
-	q.SetDatabase(athenaDbName)
+	q.SetDatabase(awsClient.awsConfig.AthenaDbName)
 
 	s.SetQueryExecutionContext(&q)
 
 	var r athena.ResultConfiguration
-	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", queryExecutionBucketName)
+	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
 	r.SetOutputLocation(queryExecutionBucketLocation)
 
 	s.SetResultConfiguration(&r)
 
-	_, err = s3.athenaClient.StartQueryExecution(&s)
+	_, err = awsClient.athenaClient.StartQueryExecution(&s)
 	if err != nil {
 		errMessage := fmt.Sprintf("failed to create athena partition for chat message: %s", err)
 		return errors.New(errMessage)

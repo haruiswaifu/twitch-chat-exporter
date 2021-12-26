@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"io/ioutil"
-	s3Client "jinnytty-log-exporter/s3-client"
+	awsClient "jinnytty-log-exporter/aws-client"
 	"log"
 )
 
@@ -27,7 +27,18 @@ func main() {
 		log.Fatalln("failed to unmarshal secrets")
 	}
 
-	s3 := s3Client.NewS3Client()
+	awsConfigBytes, err := ioutil.ReadFile("./aws-config.json")
+	if err != nil {
+		log.Fatalln("failed to read aws config")
+	}
+
+	awsConf := &awsClient.AwsConfig{}
+	err = json.Unmarshal(awsConfigBytes, awsConf)
+	if err != nil {
+		log.Fatalln("failed to unmarshal aws config")
+	}
+
+	s3 := awsClient.NewAWSClient(*awsConf)
 
 	client := twitchIrc.NewClient(s.Username, s.OauthKey)
 	client.Join(channels...)
