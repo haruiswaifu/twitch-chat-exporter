@@ -37,27 +37,27 @@ func NewS3Client() *S3Client {
 }
 
 type messageToSave struct {
-	Text      string `json:"message"`
-	Timestamp int64  `json:"timestamp"`
-	Username  string `json:"username"`
-	Channel   string `json:"channel"`
+	Text     string `json:"message"`
+	Time     string `json:"time"`
+	Username string `json:"username"`
+	Channel  string `json:"channel"`
 }
 
 func (s3 *S3Client) Put(message twitchIrc.PrivateMessage) error {
-	t, channel, user := message.Time, message.Channel, message.User.Name
+	t, channel := message.Time, message.Channel
 
-	y, month, d := t.Year(), t.Month(), t.Day()
-	h, min, sec := t.Hour(), t.Minute(), t.Second()
+	y, m, d := t.Year(), int(t.Month()), t.Day()
+	dateString := fmt.Sprintf("%d-%d-%d", y, m, d)
+	logIdentifier := fmt.Sprintf("%s.log", t.String())
+	prefixKey := fmt.Sprintf("channel=%s/date_string=%s/%s", channel, dateString, logIdentifier)
 
-	prefixKey := fmt.Sprintf("channel=%s/user=%s/year=%d/month=%s/day=%d/hour=%d/min=%d/sec=%d/message", channel, user, y, month, d, h, min, sec)
-
-	m := messageToSave{
-		Text:      message.Message,
-		Timestamp: message.Time.Unix(),
-		Username:  message.User.Name,
-		Channel:   message.Channel,
+	mess := messageToSave{
+		Text:     message.Message,
+		Time:     t.String(),
+		Username: message.User.Name,
+		Channel:  channel,
 	}
-	marshalledMessage, err := json.Marshal(m)
+	marshalledMessage, err := json.Marshal(mess)
 	if err != nil {
 		errMessage := fmt.Sprintf("failed to marshal message: %s", err)
 		return errors.New(errMessage)
