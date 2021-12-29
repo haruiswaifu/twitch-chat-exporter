@@ -64,7 +64,7 @@ func (awsClient *AWSClient) Put(message twitchIrc.PrivateMessage) error {
 
 	mess := messageToSave{
 		Text:     message.Message,
-		Time:     t.String(),
+		Time:     t.Format("02/01/06 15:04:05 MST"),
 		Username: message.User.Name,
 		Channel:  channel,
 	}
