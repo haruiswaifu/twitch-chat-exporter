@@ -7,4 +7,9 @@ require (
 	github.com/gempir/go-twitch-irc/v2 v2.8.1
 )
 
-require github.com/jmespath/go-jmespath v0.4.0 // indirect
+require (
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/robfig/cron v1.2.0 // indirect
+	github.com/sirupsen/logrus v1.9.0 // indirect
+	golang.org/x/sys v0.0.0-20220727055044-e65921a090b8 // indirect
+)

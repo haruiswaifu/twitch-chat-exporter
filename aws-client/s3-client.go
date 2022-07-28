@@ -2,14 +2,12 @@ package aws_client
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"time"
 )
 
@@ -18,10 +16,6 @@ type AwsConfig struct {
 	AthenaDbName             string `json:"athena-db-name"`
 	AthenaTableName          string `json:"athena-table-name"`
 	QueryExecutionBucketName string `json:"query-execution-bucket-name"`
-}
-
-type ChatLogPutter interface {
-	Put(message string, channel string, time time.Time) error
 }
 
 type AWSClient struct {
@@ -36,7 +30,7 @@ func NewAWSClient(awsConfig AwsConfig) *AWSClient {
 	// and region from the shared configuration file ~/.aws/config.
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
-		Profile:           "s3-user",
+		Profile:           "default",
 	}))
 	uploader := s3manager.NewUploader(sess)
 	athenaClient := athena.New(sess)
@@ -47,37 +41,16 @@ func NewAWSClient(awsConfig AwsConfig) *AWSClient {
 	}
 }
 
-type messageToSave struct {
-	Text     string `json:"message"`
-	Time     string `json:"time"`
-	Username string `json:"username"`
-	Channel  string `json:"channel"`
-}
-
-func (awsClient *AWSClient) Put(message twitchIrc.PrivateMessage) error {
-	t, channel := message.Time, message.Channel
-
-	y, m, d := t.Year(), int(t.Month()), t.Day()
-	dateString := fmt.Sprintf("%d-%d-%d", y, m, d)
-	logIdentifier := fmt.Sprintf("%s.log", t.String())
+func (awsClient *AWSClient) Put(channel string, fileContent []byte) error {
+	currentTime := time.Now()
+	dateString := currentTime.Format("2006-01-02")
+	logIdentifier := fmt.Sprintf("%s.log", currentTime.String())
 	prefixKey := fmt.Sprintf("channel=%s/date_string=%s/%s", channel, dateString, logIdentifier)
 
-	mess := messageToSave{
-		Text:     message.Message,
-		Time:     t.Format("02/01/06 15:04:05 MST"),
-		Username: message.User.Name,
-		Channel:  channel,
-	}
-	marshalledMessage, err := json.Marshal(mess)
-	if err != nil {
-		errMessage := fmt.Sprintf("failed to marshal message: %s", err)
-		return errors.New(errMessage)
-	}
-
-	_, err = awsClient.s3uploader.Upload(&s3manager.UploadInput{
+	_, err := awsClient.s3uploader.Upload(&s3manager.UploadInput{
 		Bucket: aws.String(awsClient.awsConfig.BucketName),
 		Key:    aws.String(prefixKey),
-		Body:   bytes.NewReader(marshalledMessage),
+		Body:   bytes.NewReader(fileContent),
 	})
 
 	if err != nil {
@@ -85,32 +58,71 @@ func (awsClient *AWSClient) Put(message twitchIrc.PrivateMessage) error {
 		return errors.New(errMessage)
 	}
 
-	var s athena.StartQueryExecutionInput
-	var queryString = fmt.Sprintf(
+	queryString := fmt.Sprintf(
 		"ALTER TABLE %s.%s ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');",
 		awsClient.awsConfig.AthenaDbName,
 		awsClient.awsConfig.AthenaTableName,
 		channel,
 		dateString)
-	s.SetQueryString(queryString)
-
-	var q athena.QueryExecutionContext
-	q.SetDatabase(awsClient.awsConfig.AthenaDbName)
-
-	s.SetQueryExecutionContext(&q)
-
-	var r athena.ResultConfiguration
+	queryExecutionContext := &athena.QueryExecutionContext{
+		Database: aws.String(awsClient.awsConfig.AthenaDbName),
+	}
 	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
-	r.SetOutputLocation(queryExecutionBucketLocation)
+	queryInput := &athena.StartQueryExecutionInput{
+		QueryString:           aws.String(queryString),
+		QueryExecutionContext: queryExecutionContext,
+		ResultConfiguration: &athena.ResultConfiguration{
+			OutputLocation: aws.String(queryExecutionBucketLocation),
+		},
+	}
 
-	s.SetResultConfiguration(&r)
-
-	_, err = awsClient.athenaClient.StartQueryExecution(&s)
+	_, err = awsClient.athenaClient.StartQueryExecution(queryInput)
 	if err != nil {
 		errMessage := fmt.Sprintf("failed to create athena partition for chat message: %s", err)
 		return errors.New(errMessage)
 	}
-
 	return nil
+}
 
+func (awsClient *AWSClient) GetTopChatters(t time.Time) (string, error) {
+	dateString := t.Format("2006-01-02")
+
+	queryString := fmt.Sprintf("SELECT COUNT(*) AS messages, username FROM twitch_chat_logs_test.logs WHERE date_string = '%s' GROUP BY username ORDER BY messages DESC LIMIT 10;", dateString)
+	queryExecutionContext := &athena.QueryExecutionContext{
+		Database: aws.String(awsClient.awsConfig.AthenaDbName),
+	}
+	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
+	queryInput := &athena.StartQueryExecutionInput{
+		QueryString:           aws.String(queryString),
+		QueryExecutionContext: queryExecutionContext,
+		ResultConfiguration: &athena.ResultConfiguration{
+			OutputLocation: aws.String(queryExecutionBucketLocation),
+		},
+	}
+	result, err := awsClient.athenaClient.StartQueryExecution(queryInput)
+	if err != nil {
+		return "", fmt.Errorf("failed to start query: %w", err)
+	}
+
+	time.Sleep(1 * time.Minute)
+
+	input := &athena.GetQueryResultsInput{
+		QueryExecutionId: result.QueryExecutionId,
+	}
+	results, err := awsClient.athenaClient.GetQueryResults(input)
+	if err != nil {
+		return "", fmt.Errorf("failed to get query results: %w", err)
+	}
+
+	resultString := "Top chatters of the day: "
+	for i, row := range results.ResultSet.Rows {
+		if i == 0 {
+			continue
+		}
+		resultString += fmt.Sprintf("#%d: %s (%s)", i, *row.Data[1].VarCharValue, *row.Data[0].VarCharValue)
+		if i != len(results.ResultSet.Rows)-1 {
+			resultString += ", "
+		}
+	}
+	return resultString, nil
 }
