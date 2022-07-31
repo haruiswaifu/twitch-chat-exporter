@@ -36,7 +36,9 @@ func (mb *messageBuffer) RoutinelyPushToS3(channel string, interval time.Duratio
 		err := mb.awsClient.Put(channel, fileContent)
 		if err != nil {
 			log.Errorf("failed to write content to S3: %s", err.Error())
+			continue
 		}
+		mb.Clear()
 	}
 }
 
