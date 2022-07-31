@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"math"
+	"strings"
 	"time"
 )
 
@@ -58,8 +60,9 @@ func (awsClient *AWSClient) Put(channel string, fileContent []byte) error {
 		return errors.New(errMessage)
 	}
 
-	queryString := fmt.Sprintf(
-		"ALTER TABLE %s.%s ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');",
+	queryTemplate := `ALTER TABLE %s.%s
+ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');`
+	queryString := fmt.Sprintf(queryTemplate,
 		awsClient.awsConfig.AthenaDbName,
 		awsClient.awsConfig.AthenaTableName,
 		channel,
@@ -84,10 +87,19 @@ func (awsClient *AWSClient) Put(channel string, fileContent []byte) error {
 	return nil
 }
 
-func (awsClient *AWSClient) GetTopChatters(t time.Time) (string, error) {
-	dateString := t.Format("2006-01-02")
+func (awsClient *AWSClient) GetTopChatters(startTime time.Time, endTime time.Time) (string, error) {
+	startDateString := startTime.Format("2006-01-02")
+	endDateString := endTime.Format("2006-01-02")
+	dayDiff := endTime.Sub(startTime).Hours() / 24
 
-	queryString := fmt.Sprintf("SELECT COUNT(*) AS messages, username FROM twitch_chat_logs_test.logs WHERE date_string = '%s' GROUP BY username ORDER BY messages DESC LIMIT 10;", dateString)
+	queryTemplate := `SELECT COUNT(*) AS messages, username
+FROM twitch_chat_logs_test.logs
+WHERE date_string BETWEEN '%s' AND '%s'
+GROUP BY username
+ORDER BY messages DESC
+LIMIT 10;`
+
+	queryString := fmt.Sprintf(queryTemplate, startDateString, endDateString)
 	queryExecutionContext := &athena.QueryExecutionContext{
 		Database: aws.String(awsClient.awsConfig.AthenaDbName),
 	}
@@ -114,15 +126,16 @@ func (awsClient *AWSClient) GetTopChatters(t time.Time) (string, error) {
 		return "", fmt.Errorf("failed to get query results: %w", err)
 	}
 
-	resultString := "Top chatters of the day: "
+	resultStringBuilder := strings.Builder{}
+	resultStringBuilder.WriteString(fmt.Sprintf("Top chatters of the last %d days: ", int(math.Trunc(dayDiff))))
 	for i, row := range results.ResultSet.Rows {
 		if i == 0 {
 			continue
 		}
-		resultString += fmt.Sprintf("#%d: %s (%s)", i, *row.Data[1].VarCharValue, *row.Data[0].VarCharValue)
+		resultStringBuilder.WriteString(fmt.Sprintf("#%d: %s (%s)", i, *row.Data[1].VarCharValue, *row.Data[0].VarCharValue))
 		if i != len(results.ResultSet.Rows)-1 {
-			resultString += ", "
+			resultStringBuilder.WriteString(", ")
 		}
 	}
-	return resultString, nil
+	return resultStringBuilder.String(), nil
 }
