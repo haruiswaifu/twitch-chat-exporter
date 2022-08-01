@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"github.com/robfig/cron"
 	log "github.com/sirupsen/logrus"
@@ -44,7 +43,6 @@ func main() {
 	if err != nil {
 		log.Fatalln("failed to unmarshal env.yaml")
 	}
-	fmt.Println(e.Channels)
 
 	awsConfigBytes, err := ioutil.ReadFile("./aws-config.json")
 	if err != nil {
