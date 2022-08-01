@@ -67,13 +67,6 @@ func main() {
 		messageBuffer.Add(m)
 	})
 
-	go func() {
-		for {
-			messageBuffer.Print()
-			time.Sleep(time.Minute)
-		}
-	}()
-
 	for _, c := range e.Channels {
 		err := awsClnt.CreateDailyPartition(e.Channels)
 		if err != nil {
