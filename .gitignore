@@ -1,3 +1,4 @@
 secrets.json
 aws-config.json
 .idea
+logexporter.bin

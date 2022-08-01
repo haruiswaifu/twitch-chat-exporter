@@ -2,10 +2,12 @@ package messagebuf
 
 import (
 	"bytes"
+	twitchIrc "github.com/gempir/go-twitch-irc/v2"
+	"github.com/robfig/cron"
 	log "github.com/sirupsen/logrus"
 	awsClient "jinnytty-log-exporter/aws-client"
+	"jinnytty-log-exporter/serializer"
 	"sync"
-	"time"
 )
 
 type messageBuffersByChannelWrapper struct {
@@ -22,12 +24,16 @@ func NewMessageBuffer(channels []string, awsClient *awsClient.AWSClient) *messag
 		messageBuffersByChannel: mbbc,
 		awsClient:               awsClient,
 	}
-	go mbbcw.RoutinelyPushToS3(10 * time.Minute)
+	mbbcw.RoutinelyPushToS3()
 	return mbbcw
 }
 
-func (mbbcw *messageBuffersByChannelWrapper) Add(message string, channel string) {
-	mbbcw.messageBuffersByChannel[channel] = append(mbbcw.messageBuffersByChannel[channel], message)
+func (mbbcw *messageBuffersByChannelWrapper) Add(m twitchIrc.PrivateMessage) {
+	message, err := serializer.ToLine(m)
+	if err != nil {
+		log.Errorf("failed to serialize message %s", m.Message)
+	}
+	mbbcw.messageBuffersByChannel[m.Channel] = append(mbbcw.messageBuffersByChannel[m.Channel], message)
 }
 
 func (mbbcw *messageBuffersByChannelWrapper) Clear() {
@@ -36,25 +42,30 @@ func (mbbcw *messageBuffersByChannelWrapper) Clear() {
 	}
 }
 
-func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3(interval time.Duration) {
-	for {
-		time.Sleep(interval)
+func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3() {
+	c := cron.New()
+	err := c.AddFunc("*/15 * * * *", func() {
 		wg := sync.WaitGroup{}
 		for c := range mbbcw.messageBuffersByChannel {
 			wg.Add(1)
-			go func() {
+			go func(channel string) {
 				defer wg.Done()
-				fileContent := mbbcw.serialize(c)
-				err := mbbcw.awsClient.Put(c, fileContent)
+				fileContent := mbbcw.serialize(channel)
+				err := mbbcw.awsClient.Put(channel, fileContent)
 				if err != nil {
-					log.Errorf("failed to write content to S3 for channel %s: %s", c, err.Error())
+					log.Errorf("failed to write content to S3 for channel %s: %s", channel, err.Error())
 					return
 				}
-			}()
+			}(c)
 		}
 		wg.Wait()
 		mbbcw.Clear()
+	})
+	if err != nil {
+		log.Errorf("failed to create cron job for pushing to S3: %s", err)
+		return
 	}
+	c.Start()
 }
 
 func (mbbcw *messageBuffersByChannelWrapper) serialize(channel string) []byte {

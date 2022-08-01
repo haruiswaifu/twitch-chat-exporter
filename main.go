@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 	awsClient "jinnytty-log-exporter/aws-client"
 	messagebuf "jinnytty-log-exporter/message-buffer"
-	"jinnytty-log-exporter/serializer"
 	"time"
 )
 
@@ -65,15 +64,18 @@ func main() {
 	awsClnt := awsClient.NewAWSClient(*awsConf)
 	messageBuffer := messagebuf.NewMessageBuffer(e.Channels, awsClnt)
 	client.OnPrivateMessage(func(m twitchIrc.PrivateMessage) {
-		message, err := serializer.ToLine(m)
-		if err != nil {
-			log.Errorf("failed to serialize message %s", m.Message)
-		}
-		messageBuffer.Add(message, m.Channel)
+		messageBuffer.Add(m)
 	})
 
+	for _, c := range e.Channels {
+		err := awsClnt.CreateDailyPartition(e.Channels)
+		if err != nil {
+			log.Errorf("failed to start creating daily partition for %s: %s", c, err)
+		}
+	}
+
 	postChatterArgs := map[int]string{
-		1: "daily",
+		//1: "daily",
 		7: "weekly",
 	}
 	for daysBack, frequencyString := range postChatterArgs {
