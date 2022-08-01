@@ -55,7 +55,7 @@ func main() {
 	}
 
 	client := twitchIrc.NewClient(s.Username, s.OauthKey)
-	client.Join(e.Channels...)
+	go joinChannels(client, e.Channels)
 
 	client.OnConnect(func() {
 		log.Println("connected")
@@ -66,6 +66,13 @@ func main() {
 	client.OnPrivateMessage(func(m twitchIrc.PrivateMessage) {
 		messageBuffer.Add(m)
 	})
+
+	go func() {
+		for {
+			messageBuffer.Print()
+			time.Sleep(time.Minute)
+		}
+	}()
 
 	for _, c := range e.Channels {
 		err := awsClnt.CreateDailyPartition(e.Channels)
@@ -88,6 +95,14 @@ func main() {
 	err = client.Connect()
 	if err != nil {
 		log.Fatalf("failed to connect: %s", err)
+	}
+}
+
+func joinChannels(client *twitchIrc.Client, channels []string) {
+	for _, c := range channels {
+		client.Join(c)
+		log.Printf("joined channel #%s", c)
+		time.Sleep(2 * time.Second) // avoid rate limits
 	}
 }
 

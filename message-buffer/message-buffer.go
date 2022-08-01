@@ -2,6 +2,7 @@ package messagebuf
 
 import (
 	"bytes"
+	"fmt"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"github.com/robfig/cron"
 	log "github.com/sirupsen/logrus"
@@ -13,6 +14,12 @@ import (
 type messageBuffersByChannelWrapper struct {
 	messageBuffersByChannel map[string][]string
 	awsClient               *awsClient.AWSClient
+}
+
+func (mbbcw *messageBuffersByChannelWrapper) Print() {
+	for k, v := range mbbcw.messageBuffersByChannel {
+		fmt.Printf("%d messages for channel %s\n", len(v), k)
+	}
 }
 
 func NewMessageBuffer(channels []string, awsClient *awsClient.AWSClient) *messageBuffersByChannelWrapper {
@@ -44,7 +51,7 @@ func (mbbcw *messageBuffersByChannelWrapper) Clear() {
 
 func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3() {
 	c := cron.New()
-	err := c.AddFunc("*/15 * * * *", func() {
+	err := c.AddFunc("@every 15m", func() {
 		wg := sync.WaitGroup{}
 		for c := range mbbcw.messageBuffersByChannel {
 			wg.Add(1)
@@ -56,6 +63,7 @@ func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3() {
 					log.Errorf("failed to write content to S3 for channel %s: %s", channel, err.Error())
 					return
 				}
+				log.Infof("put %d bytes into channel %s", len(fileContent), channel)
 			}(c)
 		}
 		wg.Wait()
