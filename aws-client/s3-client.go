@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/robfig/cron"
+	log "github.com/sirupsen/logrus"
 	"math"
 	"strings"
 	"time"
@@ -60,46 +62,24 @@ func (awsClient *AWSClient) Put(channel string, fileContent []byte) error {
 		return errors.New(errMessage)
 	}
 
-	queryTemplate := `ALTER TABLE %s.%s
-ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');`
-	queryString := fmt.Sprintf(queryTemplate,
-		awsClient.awsConfig.AthenaDbName,
-		awsClient.awsConfig.AthenaTableName,
-		channel,
-		dateString)
-	queryExecutionContext := &athena.QueryExecutionContext{
-		Database: aws.String(awsClient.awsConfig.AthenaDbName),
-	}
-	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
-	queryInput := &athena.StartQueryExecutionInput{
-		QueryString:           aws.String(queryString),
-		QueryExecutionContext: queryExecutionContext,
-		ResultConfiguration: &athena.ResultConfiguration{
-			OutputLocation: aws.String(queryExecutionBucketLocation),
-		},
-	}
-
-	_, err = awsClient.athenaClient.StartQueryExecution(queryInput)
-	if err != nil {
-		errMessage := fmt.Sprintf("failed to create athena partition for chat message: %s", err)
-		return errors.New(errMessage)
-	}
 	return nil
 }
 
-func (awsClient *AWSClient) GetTopChatters(startTime time.Time, endTime time.Time) (string, error) {
+func (awsClient *AWSClient) GetTopChatters(startTime time.Time, endTime time.Time, channel string) (string, error) {
 	startDateString := startTime.Format("2006-01-02")
 	endDateString := endTime.Format("2006-01-02")
 	dayDiff := endTime.Sub(startTime).Hours() / 24
 
 	queryTemplate := `SELECT COUNT(*) AS messages, username
-FROM twitch_chat_logs_test.logs
+FROM %s.%s
 WHERE date_string BETWEEN '%s' AND '%s'
+AND channel = '%s'
 GROUP BY username
 ORDER BY messages DESC
 LIMIT 10;`
 
-	queryString := fmt.Sprintf(queryTemplate, startDateString, endDateString)
+	queryString := fmt.Sprintf(queryTemplate, awsClient.awsConfig.AthenaDbName,
+		awsClient.awsConfig.AthenaTableName, startDateString, endDateString, channel)
 	queryExecutionContext := &athena.QueryExecutionContext{
 		Database: aws.String(awsClient.awsConfig.AthenaDbName),
 	}
@@ -138,4 +118,39 @@ LIMIT 10;`
 		}
 	}
 	return resultStringBuilder.String(), nil
+}
+
+func (awsClient *AWSClient) createDailyPartition(channel string, dateString string) error {
+	c := cron.New()
+	err := c.AddFunc("@daily", func() {
+		queryTemplate := `ALTER TABLE %s.%s
+	ADD IF NOT EXISTS PARTITION (channel = '%s', date_string = '%s');`
+		queryString := fmt.Sprintf(queryTemplate,
+			awsClient.awsConfig.AthenaDbName,
+			awsClient.awsConfig.AthenaTableName,
+			channel,
+			dateString)
+		queryExecutionContext := &athena.QueryExecutionContext{
+			Database: aws.String(awsClient.awsConfig.AthenaDbName),
+		}
+		queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
+		queryInput := &athena.StartQueryExecutionInput{
+			QueryString:           aws.String(queryString),
+			QueryExecutionContext: queryExecutionContext,
+			ResultConfiguration: &athena.ResultConfiguration{
+				OutputLocation: aws.String(queryExecutionBucketLocation),
+			},
+		}
+
+		_, err := awsClient.athenaClient.StartQueryExecution(queryInput)
+		if err != nil {
+			err := fmt.Errorf("failed to create athena partition for date %s: %w", dateString, err)
+			log.Println(err)
+		}
+
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create cron job for creating athena partitions: %w", err)
+	}
+	return nil
 }

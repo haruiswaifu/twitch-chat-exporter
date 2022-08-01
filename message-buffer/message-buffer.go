@@ -4,47 +4,62 @@ import (
 	"bytes"
 	log "github.com/sirupsen/logrus"
 	awsClient "jinnytty-log-exporter/aws-client"
+	"sync"
 	"time"
 )
 
-type messageBuffer struct {
-	messages  []string
-	awsClient *awsClient.AWSClient
+type messageBuffersByChannelWrapper struct {
+	messageBuffersByChannel map[string][]string
+	awsClient               *awsClient.AWSClient
 }
 
-func NewMessageBuffer(channel string, awsClient *awsClient.AWSClient) *messageBuffer {
-	mb := &messageBuffer{
-		messages:  []string{},
-		awsClient: awsClient,
+func NewMessageBuffer(channels []string, awsClient *awsClient.AWSClient) *messageBuffersByChannelWrapper {
+	mbbc := map[string][]string{}
+	for _, c := range channels {
+		mbbc[c] = []string{}
 	}
-	go mb.RoutinelyPushToS3(channel, 10*time.Minute)
-	return mb
+	mbbcw := &messageBuffersByChannelWrapper{
+		messageBuffersByChannel: mbbc,
+		awsClient:               awsClient,
+	}
+	go mbbcw.RoutinelyPushToS3(10 * time.Minute)
+	return mbbcw
 }
 
-func (mb *messageBuffer) Add(message string) {
-	mb.messages = append(mb.messages, message)
+func (mbbcw *messageBuffersByChannelWrapper) Add(message string, channel string) {
+	mbbcw.messageBuffersByChannel[channel] = append(mbbcw.messageBuffersByChannel[channel], message)
 }
 
-func (mb *messageBuffer) Clear() {
-	mb.messages = []string{}
+func (mbbcw *messageBuffersByChannelWrapper) Clear() {
+	for c := range mbbcw.messageBuffersByChannel {
+		mbbcw.messageBuffersByChannel[c] = []string{}
+	}
 }
 
-func (mb *messageBuffer) RoutinelyPushToS3(channel string, interval time.Duration) {
+func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3(interval time.Duration) {
 	for {
 		time.Sleep(interval)
-		fileContent := mb.serialize()
-		err := mb.awsClient.Put(channel, fileContent)
-		if err != nil {
-			log.Errorf("failed to write content to S3: %s", err.Error())
-			continue
+		wg := sync.WaitGroup{}
+		for c := range mbbcw.messageBuffersByChannel {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				fileContent := mbbcw.serialize(c)
+				err := mbbcw.awsClient.Put(c, fileContent)
+				if err != nil {
+					log.Errorf("failed to write content to S3 for channel %s: %s", c, err.Error())
+					return
+				}
+			}()
 		}
-		mb.Clear()
+		wg.Wait()
+		mbbcw.Clear()
 	}
 }
 
-func (mb *messageBuffer) serialize() []byte {
+func (mbbcw *messageBuffersByChannelWrapper) serialize(channel string) []byte {
 	var fileContent bytes.Buffer
-	for _, m := range mb.messages {
+	for _, m := range mbbcw.messageBuffersByChannel[channel] {
 		fileContent.WriteString(m)
 		fileContent.WriteString("\n")
 	}

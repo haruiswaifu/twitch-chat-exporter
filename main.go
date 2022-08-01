@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"github.com/robfig/cron"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	awsClient "jinnytty-log-exporter/aws-client"
 	messagebuf "jinnytty-log-exporter/message-buffer"
@@ -18,19 +20,31 @@ type secrets struct {
 	OauthKey string `json:"oauth-key"`
 }
 
-var channels = []string{"jinnytty"}
+type env struct {
+	Channels []string `yaml:"channels"`
+}
 
 func main() {
 	secretsBytes, err := ioutil.ReadFile("./secrets.json")
 	if err != nil {
 		log.Fatalln("failed to read secrets")
 	}
-
 	s := &secrets{}
 	err = json.Unmarshal(secretsBytes, s)
 	if err != nil {
 		log.Fatalln("failed to unmarshal secrets")
 	}
+
+	channelsBytes, err := ioutil.ReadFile("./env.yaml")
+	if err != nil {
+		log.Fatalln("failed to read env.yaml")
+	}
+	e := &env{}
+	err = yaml.Unmarshal(channelsBytes, e)
+	if err != nil {
+		log.Fatalln("failed to unmarshal env.yaml")
+	}
+	fmt.Println(e.Channels)
 
 	awsConfigBytes, err := ioutil.ReadFile("./aws-config.json")
 	if err != nil {
@@ -44,20 +58,20 @@ func main() {
 	}
 
 	client := twitchIrc.NewClient(s.Username, s.OauthKey)
-	client.Join(channels...)
+	client.Join(e.Channels...)
 
 	client.OnConnect(func() {
 		log.Println("connected")
 	})
 
 	awsClnt := awsClient.NewAWSClient(*awsConf)
-	messageBuffer := messagebuf.NewMessageBuffer(channels[0], awsClnt)
+	messageBuffer := messagebuf.NewMessageBuffer(e.Channels, awsClnt)
 	client.OnPrivateMessage(func(m twitchIrc.PrivateMessage) {
 		message, err := serializer.ToLine(m)
 		if err != nil {
 			log.Errorf("failed to serialize message %s", m.Message)
 		}
-		messageBuffer.Add(message)
+		messageBuffer.Add(message, m.Channel)
 	})
 
 	postChatterArgs := map[int]string{
@@ -65,7 +79,7 @@ func main() {
 		7: "weekly",
 	}
 	for daysBack, frequencyString := range postChatterArgs {
-		err = routinelyPostTopChatters(client, awsClnt, daysBack)
+		err = routinelyPostTopChatters(client, awsClnt, daysBack, e.Channels)
 		if err != nil {
 			log.Errorf("failed to post %s top chatters: %s", frequencyString, err.Error())
 		}
@@ -77,7 +91,7 @@ func main() {
 	}
 }
 
-func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClient.AWSClient, daysBack int) error {
+func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClient.AWSClient, daysBack int, channels []string) error {
 	c := cron.New()
 	var cronExpr string
 	switch daysBack {
@@ -89,13 +103,15 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 		return errors.New("unimplemented other periods")
 	}
 	err := c.AddFunc(cronExpr, func() {
-		yesterday := time.Now().Add(-time.Hour)
-		startDay := yesterday.Add(-time.Hour * 24 * time.Duration(daysBack))
-		chatters, err := awsClient.GetTopChatters(startDay, yesterday)
-		if err != nil {
-			log.Errorf("failed to get top chatters: %s", err.Error())
+		for _, channel := range channels {
+			yesterday := time.Now().Add(-time.Hour)
+			startDay := yesterday.Add(-time.Hour * 24 * time.Duration(daysBack))
+			chatters, err := awsClient.GetTopChatters(startDay, yesterday, channel)
+			if err != nil {
+				log.Errorf("failed to get top chatters for channel %s: %s", channel, err.Error())
+			}
+			twitchClient.Say(channel, chatters)
 		}
-		twitchClient.Say(channels[0], chatters)
 	})
 	if err != nil {
 		log.Errorf("failed to add cron function: %s", err)
