@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/athena"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
 	"math"
 	"strings"
@@ -126,7 +126,7 @@ LIMIT 10;`
 
 func (awsClient *AWSClient) CreateDailyPartition(channels []string) error {
 	c := cron.New()
-	err := c.AddFunc("@daily", func() {
+	_, err := c.AddFunc("0 0 */1 * *", func() {
 		awsClient.createPartition(channels, 5)
 	})
 	if err != nil {
@@ -186,7 +186,7 @@ func (awsClient *AWSClient) createPartition(channels []string, retries int) {
 	timeout := 30 * time.Minute
 	interval := 1 * time.Minute
 outer:
-	for startTime := time.Now(); time.Now().Sub(startTime) < timeout; time.Sleep(interval) {
+	for startTime := time.Now().Add(time.Minute); time.Now().Sub(startTime) < timeout; time.Sleep(interval) {
 		getQueryExecutionInput := &athena.GetQueryExecutionInput{
 			QueryExecutionId: startQueryExecutionResult.QueryExecutionId,
 		}

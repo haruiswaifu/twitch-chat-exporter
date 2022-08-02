@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -75,7 +75,7 @@ func main() {
 	}
 
 	postChatterArgs := map[int]string{
-		//1: "daily",
+		1: "daily",
 		7: "weekly",
 	}
 	for daysBack, frequencyString := range postChatterArgs {
@@ -104,13 +104,15 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 	var cronExpr string
 	switch daysBack {
 	case 1:
-		cronExpr = "@daily"
+		cronExpr = "1 0 * * *" // 00:01 on any day
 	case 7:
-		cronExpr = "@weekly"
+		cronExpr = "5 0 * * 1" // 00:05 on Mondays
 	default:
 		return errors.New("unimplemented other periods")
 	}
-	err := c.AddFunc(cronExpr, func() {
+
+	_, err := c.AddFunc(cronExpr, func() {
+		results := map[string]string{}
 		for _, channel := range channels {
 			yesterday := time.Now().Add(-time.Hour)
 			startDay := yesterday.Add(-time.Hour * 24 * time.Duration(daysBack))
@@ -118,7 +120,11 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 			if err != nil {
 				log.Errorf("failed to get top chatters for channel %s: %s", channel, err.Error())
 			}
+			results[channel] = chatters
+		}
+		for channel, chatters := range results {
 			twitchClient.Say(channel, chatters)
+			time.Sleep(time.Second) // avoid rate limits
 		}
 	})
 	if err != nil {

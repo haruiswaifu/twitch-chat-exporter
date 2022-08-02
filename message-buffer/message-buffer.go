@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
 	awsClient "jinnytty-log-exporter/aws-client"
 	"jinnytty-log-exporter/serializer"
@@ -14,9 +14,12 @@ import (
 type messageBuffersByChannelWrapper struct {
 	messageBuffersByChannel map[string][]string
 	awsClient               *awsClient.AWSClient
+	lock                    sync.RWMutex
 }
 
 func (mbbcw *messageBuffersByChannelWrapper) Print() {
+	mbbcw.lock.Lock()
+	defer mbbcw.lock.Unlock()
 	for k, v := range mbbcw.messageBuffersByChannel {
 		fmt.Printf("%d messages for channel %s\n", len(v), k)
 	}
@@ -30,6 +33,7 @@ func NewMessageBuffer(channels []string, awsClient *awsClient.AWSClient) *messag
 	mbbcw := &messageBuffersByChannelWrapper{
 		messageBuffersByChannel: mbbc,
 		awsClient:               awsClient,
+		lock:                    sync.RWMutex{},
 	}
 	mbbcw.RoutinelyPushToS3()
 	return mbbcw
@@ -44,6 +48,8 @@ func (mbbcw *messageBuffersByChannelWrapper) Add(m twitchIrc.PrivateMessage) {
 }
 
 func (mbbcw *messageBuffersByChannelWrapper) Clear() {
+	mbbcw.lock.Lock()
+	defer mbbcw.lock.Unlock()
 	for c := range mbbcw.messageBuffersByChannel {
 		mbbcw.messageBuffersByChannel[c] = []string{}
 	}
@@ -51,20 +57,20 @@ func (mbbcw *messageBuffersByChannelWrapper) Clear() {
 
 func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3() {
 	c := cron.New()
-	err := c.AddFunc("@every 15m", func() {
+	_, err := c.AddFunc("*/15 * * * *", func() {
 		wg := sync.WaitGroup{}
-		for c := range mbbcw.messageBuffersByChannel {
+		for iteratedChannel, messages := range mbbcw.messageBuffersByChannel {
 			wg.Add(1)
-			go func(channel string) {
+			go func(channel string, messages []string) {
 				defer wg.Done()
-				fileContent := mbbcw.serialize(channel)
+				fileContent := serialize(messages)
 				err := mbbcw.awsClient.Put(channel, fileContent)
 				if err != nil {
 					log.Errorf("failed to write content to S3 for channel %s: %s", channel, err.Error())
 					return
 				}
 				log.Infof("put %d bytes into channel %s", len(fileContent), channel)
-			}(c)
+			}(iteratedChannel, messages)
 		}
 		wg.Wait()
 		mbbcw.Clear()
@@ -76,9 +82,9 @@ func (mbbcw *messageBuffersByChannelWrapper) RoutinelyPushToS3() {
 	c.Start()
 }
 
-func (mbbcw *messageBuffersByChannelWrapper) serialize(channel string) []byte {
+func serialize(messages []string) []byte {
 	var fileContent bytes.Buffer
-	for _, m := range mbbcw.messageBuffersByChannel[channel] {
+	for _, m := range messages {
 		fileContent.WriteString(m)
 		fileContent.WriteString("\n")
 	}
