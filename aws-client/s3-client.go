@@ -140,7 +140,7 @@ func createPartitionQueryTemplate(channels []string) string {
 	var queryTemplateBuilder strings.Builder
 	queryTemplateBuilder.WriteString("ALTER TABLE %s.%s ADD IF NOT EXISTS\n")
 	for i, c := range channels {
-		queryTemplateBuilder.WriteString(fmt.Sprintf("PARTITION (channel = '%s', date_string = '%%s'", c))
+		queryTemplateBuilder.WriteString(fmt.Sprintf("PARTITION (channel = '%s', date_string = '%%s')", c))
 		if i != len(channels)-1 {
 			queryTemplateBuilder.WriteString("\n")
 		} else {
