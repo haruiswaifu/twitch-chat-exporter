@@ -67,11 +67,9 @@ func main() {
 		messageBuffer.Add(m)
 	})
 
-	for _, c := range e.Channels {
-		err := awsClnt.CreateDailyPartition(e.Channels)
-		if err != nil {
-			log.Errorf("failed to start creating daily partition for %s: %s", c, err)
-		}
+	err = awsClnt.CreateDailyPartition(e.Channels)
+	if err != nil {
+		log.Errorf("failed to start creating daily partition for channels: %s", err)
 	}
 
 	postChatterArgs := map[int]string{

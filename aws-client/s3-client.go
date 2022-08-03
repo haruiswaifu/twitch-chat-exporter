@@ -149,7 +149,6 @@ func createPartitionQueryTemplate(channels []string) string {
 	}
 	queryTemplate := queryTemplateBuilder.String()
 	return queryTemplate
-
 }
 
 func (awsClient *AWSClient) createPartition(channels []string, retries int) {
@@ -160,18 +159,20 @@ func (awsClient *AWSClient) createPartition(channels []string, retries int) {
 
 	queryTemplate := createPartitionQueryTemplate(channels)
 	dateString := time.Now().Format(dateStringFormat)
-
-	queryString := fmt.Sprintf(queryTemplate,
-		awsClient.awsConfig.AthenaDbName,
-		awsClient.awsConfig.AthenaTableName,
-		dateString)
-	queryExecutionContext := &athena.QueryExecutionContext{
-		Database: aws.String(awsClient.awsConfig.AthenaDbName),
+	var queryArgs = make([]any, len(channels)+2)
+	queryArgs = append(queryArgs, awsClient.awsConfig.AthenaDbName)
+	queryArgs = append(queryArgs, awsClient.awsConfig.AthenaTableName)
+	for _ = range channels {
+		queryArgs = append(queryArgs, dateString)
 	}
+	queryString := fmt.Sprintf(queryTemplate, queryArgs...)
+
 	queryExecutionBucketLocation := fmt.Sprintf("s3://%s", awsClient.awsConfig.QueryExecutionBucketName)
 	queryInput := &athena.StartQueryExecutionInput{
-		QueryString:           aws.String(queryString),
-		QueryExecutionContext: queryExecutionContext,
+		QueryString: aws.String(queryString),
+		QueryExecutionContext: &athena.QueryExecutionContext{
+			Database: aws.String(awsClient.awsConfig.AthenaDbName),
+		},
 		ResultConfiguration: &athena.ResultConfiguration{
 			OutputLocation: aws.String(queryExecutionBucketLocation),
 		},
