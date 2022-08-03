@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	awsClient "jinnytty-log-exporter/aws-client"
 	messagebuf "jinnytty-log-exporter/message-buffer"
+	"sync"
 	"time"
 )
 
@@ -102,24 +103,30 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 	var cronExpr string
 	switch daysBack {
 	case 1:
-		cronExpr = "1 0 * * *" // 00:01 on any day
+		cronExpr = "1 2 * * *" // 00:01 on any day
 	case 7:
 		cronExpr = "5 0 * * 1" // 00:05 on Mondays
 	default:
 		return errors.New("unimplemented other periods")
 	}
 
+	yesterday := time.Now().Add(-time.Hour)
+	startDay := yesterday.Add(-time.Hour * 24 * time.Duration(daysBack))
 	_, err := c.AddFunc(cronExpr, func() {
 		results := map[string]string{}
+		wg := sync.WaitGroup{}
 		for _, channel := range channels {
-			yesterday := time.Now().Add(-time.Hour)
-			startDay := yesterday.Add(-time.Hour * 24 * time.Duration(daysBack))
-			chatters, err := awsClient.GetTopChatters(startDay, yesterday, channel)
-			if err != nil {
-				log.Errorf("failed to get top chatters for channel %s: %s", channel, err.Error())
-			}
-			results[channel] = chatters
+			wg.Add(1)
+			go func(channel string) {
+				defer wg.Done()
+				chatters, err := awsClient.GetTopChatters(startDay, yesterday, channel)
+				if err != nil {
+					log.Errorf("failed to get top chatters for channel %s: %s", channel, err.Error())
+				}
+				results[channel] = chatters
+			}(channel)
 		}
+		wg.Wait()
 		for channel, chatters := range results {
 			twitchClient.Say(channel, chatters)
 			time.Sleep(time.Second) // avoid rate limits
