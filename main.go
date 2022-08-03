@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	twitchIrc "github.com/gempir/go-twitch-irc/v2"
 	"github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
@@ -102,9 +103,9 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 	c := cron.New()
 	var cronExpr string
 	switch daysBack {
-	case 1:
-		cronExpr = "1 2 * * *" // 00:01 on any day
-	case 7:
+	case 0:
+		cronExpr = "*/1 * * * *" // 00:01 on any day
+	case 6:
 		cronExpr = "5 0 * * 1" // 00:05 on Mondays
 	default:
 		return errors.New("unimplemented other periods")
@@ -123,13 +124,15 @@ func routinelyPostTopChatters(twitchClient *twitchIrc.Client, awsClient *awsClie
 				if err != nil {
 					log.Errorf("failed to get top chatters for channel %s: %s", channel, err.Error())
 				}
+				fmt.Printf("top chatters %s: %s", channel, chatters)
 				results[channel] = chatters
 			}(channel)
 		}
 		wg.Wait()
 		for channel, chatters := range results {
-			twitchClient.Say(channel, chatters)
-			time.Sleep(time.Second) // avoid rate limits
+			fmt.Printf("top chatters %s: %s", channel, chatters)
+			//twitchClient.Say(channel, chatters)
+			time.Sleep(2 * time.Second) // avoid rate limits
 		}
 	})
 	if err != nil {
