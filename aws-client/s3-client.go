@@ -69,7 +69,10 @@ func (awsClient *AWSClient) Put(channel string, fileContent []byte) error {
 	return nil
 }
 
-func (awsClient *AWSClient) GetTopChatters(startTime time.Time, endTime time.Time, channel string) (string, error) {
+func (awsClient *AWSClient) GetTopChatters(startTime time.Time, endTime time.Time, channel string, retries int) (string, error) {
+	if retries <= 0 {
+		return "", errors.New("failed after too many retries")
+	}
 	startDateString := startTime.Format("2006-01-02")
 	endDateString := endTime.Format("2006-01-02")
 	dayDiff := endTime.Sub(startTime).Hours() / 24
@@ -95,33 +98,51 @@ LIMIT 10;`
 			OutputLocation: aws.String(queryExecutionBucketLocation),
 		},
 	}
-	result, err := awsClient.athenaClient.StartQueryExecution(queryInput)
+	startQueryExecutionOutput, err := awsClient.athenaClient.StartQueryExecution(queryInput)
 	if err != nil {
 		return "", fmt.Errorf("failed to start query: %w", err)
 	}
 
-	time.Sleep(1 * time.Minute)
-
-	input := &athena.GetQueryResultsInput{
-		QueryExecutionId: result.QueryExecutionId,
-	}
-	results, err := awsClient.athenaClient.GetQueryResults(input)
-	if err != nil {
-		return "", fmt.Errorf("failed to get query results: %w", err)
+	getQueryExecutionInput := &athena.GetQueryExecutionInput{
+		QueryExecutionId: startQueryExecutionOutput.QueryExecutionId,
 	}
 
-	resultStringBuilder := strings.Builder{}
-	resultStringBuilder.WriteString(fmt.Sprintf("Top chatters of the last %d days: ", int(math.Trunc(dayDiff))))
-	for i, row := range results.ResultSet.Rows {
-		if i == 0 {
+	timeout := 30 * time.Minute
+	interval := 10 * time.Second
+	for startTime := time.Now().Add(time.Minute); time.Now().Sub(startTime) < timeout; time.Sleep(interval) {
+		getQueryExecutionOutput, err := awsClient.athenaClient.GetQueryExecution(getQueryExecutionInput)
+		if err != nil {
+			log.Errorf("failed to get status of top chatters query execution: %s", err)
 			continue
 		}
-		resultStringBuilder.WriteString(fmt.Sprintf("#%d: %s (%s)", i, *row.Data[1].VarCharValue, *row.Data[0].VarCharValue))
-		if i != len(results.ResultSet.Rows)-1 {
-			resultStringBuilder.WriteString(", ")
+		switch *getQueryExecutionOutput.QueryExecution.Status.State {
+		case athena.QueryExecutionStateSucceeded:
+			getQueryResultsInput := &athena.GetQueryResultsInput{
+				QueryExecutionId: startQueryExecutionOutput.QueryExecutionId,
+			}
+			getQueryResultsOutput, err := awsClient.athenaClient.GetQueryResults(getQueryResultsInput)
+			if err != nil {
+				return "", fmt.Errorf("failed to get query results: %s", err)
+			}
+			resultStringBuilder := strings.Builder{}
+			resultStringBuilder.WriteString(fmt.Sprintf("Top chatters of the last %d days: ", int(math.Trunc(dayDiff))+1))
+			for i, row := range getQueryResultsOutput.ResultSet.Rows {
+				if i == 0 {
+					continue
+				}
+				resultStringBuilder.WriteString(fmt.Sprintf("#%d: %s (%s)", i, *row.Data[1].VarCharValue, *row.Data[0].VarCharValue))
+				if i != len(getQueryResultsOutput.ResultSet.Rows)-1 {
+					resultStringBuilder.WriteString(", ")
+				}
+			}
+			return resultStringBuilder.String(), nil
+		case athena.QueryExecutionStateFailed, athena.QueryExecutionStateCancelled:
+			return awsClient.GetTopChatters(startTime, endTime, channel, retries-1)
+		case athena.QueryExecutionStateQueued, athena.QueryExecutionStateRunning:
+			time.Sleep(10 * time.Second) // wait for new status update
 		}
 	}
-	return resultStringBuilder.String(), nil
+	return "", errors.New("timed out waiting for status update")
 }
 
 func (awsClient *AWSClient) CreateDailyPartition(channels []string) error {
@@ -162,7 +183,7 @@ func (awsClient *AWSClient) createPartition(channels []string, retries int) {
 	var queryArgs = make([]any, len(channels)+2)
 	queryArgs = append(queryArgs, awsClient.awsConfig.AthenaDbName)
 	queryArgs = append(queryArgs, awsClient.awsConfig.AthenaTableName)
-	for _ = range channels {
+	for range channels {
 		queryArgs = append(queryArgs, dateString)
 	}
 	queryString := fmt.Sprintf(queryTemplate, queryArgs...)
@@ -185,8 +206,7 @@ func (awsClient *AWSClient) createPartition(channels []string, retries int) {
 	}
 
 	timeout := 30 * time.Minute
-	interval := 1 * time.Minute
-outer:
+	interval := 10 * time.Second
 	for startTime := time.Now().Add(time.Minute); time.Now().Sub(startTime) < timeout; time.Sleep(interval) {
 		getQueryExecutionInput := &athena.GetQueryExecutionInput{
 			QueryExecutionId: startQueryExecutionResult.QueryExecutionId,
@@ -203,10 +223,9 @@ outer:
 			return
 		case athena.QueryExecutionStateFailed, athena.QueryExecutionStateCancelled:
 			awsClient.createPartition(channels, retries-1)
-			break outer
+			return
 		case athena.QueryExecutionStateQueued, athena.QueryExecutionStateRunning:
 			// wait for new status update
 		}
 	}
-
 }
