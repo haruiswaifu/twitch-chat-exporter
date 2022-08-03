@@ -78,8 +78,8 @@ func main() {
 		1: "daily",
 		7: "weekly",
 	}
-	for daysBack, frequencyString := range postChatterArgs {
-		err = routinelyPostTopChatters(client, awsClnt, daysBack, e.Channels)
+	for days, frequencyString := range postChatterArgs {
+		err = routinelyPostTopChatters(client, awsClnt, days-1, e.Channels)
 		if err != nil {
 			log.Errorf("failed to post %s top chatters: %s", frequencyString, err.Error())
 		}
